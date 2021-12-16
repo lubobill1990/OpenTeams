@@ -11,19 +11,62 @@ import useWebSocket, { ReadyState } from "react-use-websocket";
 
 import { TextField } from "@fluentui/react/lib/TextField";
 import { PrimaryButton } from "@fluentui/react/lib/Button";
-import {
-  webApi,
-  businessApi,
-  signalApi,
-  streamApi,
-  SignalApi,
-  StreamApi,
-  BusinessApi,
-} from "./Api";
+import { webApi, SignalApi, StreamApi, BusinessApi } from "./Api";
 import "./App.css";
 import "office-ui-fabric-react/dist/css/fabric.css";
 
 const UserContext = createContext();
+
+export const useWebSocketHandler = (
+  lastJsonMessage,
+  setUserList,
+  businessApi,
+  streamApi
+) => {
+  const [remoteStream, setRemoteStream] = useState();
+  const [localStream, setLocalStream] = useState();
+  useEffect(() => {
+    if (lastJsonMessage === null) {
+      return;
+    }
+    // effect
+    (async () => {
+      const { type, payload } = lastJsonMessage;
+      if (type === "offer") {
+        // offer received, need to answer
+        const { fromUserId, toUserId, offer } = payload;
+
+        await businessApi.answer(fromUserId, offer);
+        setRemoteStream(streamApi.getStream(fromUserId));
+        setLocalStream(streamApi.getStream(toUserId));
+      } else if (type === "answer") {
+        // answer received
+        const { fromUserId, answer } = payload;
+        await businessApi.handleAnswer(fromUserId, answer);
+        setRemoteStream(streamApi.getStream(fromUserId));
+      } else if (type === "candidate") {
+        // candidate received
+        const { fromUserId, candidate } = payload;
+        businessApi.addCandidate(fromUserId, candidate);
+      }
+      switch (type) {
+        case "user_disconnected":
+        case "user_connected":
+          setUserList(await webApi.getUserList());
+          break;
+        default:
+          break;
+      }
+    })();
+    return () => {
+      // cleanup
+    };
+  }, [lastJsonMessage, businessApi, streamApi, setUserList]);
+  return {
+    remoteStream,
+    localStream,
+  };
+};
 
 function App() {
   const [socketUrl, setSocketUrl] = useState(
@@ -51,46 +94,22 @@ function App() {
   const localVideoRef = useRef();
   const remoteVideoRef = useRef();
   const websocketRef = useRef();
+  const { remoteStream, localStream } = useWebSocketHandler(
+    lastJsonMessage,
+    setUserList,
+    businessApi,
+    streamApi
+  );
   const enterRoom = useCallback(() => {
     // get user lists in the room
   }, [roomId]);
   useEffect(() => {
-    if (lastJsonMessage === null) {
-      return;
-    }
-    // effect
-    (async () => {
-      const { type, payload } = lastJsonMessage;
-      if (type === "offer") {
-        // offer received, need to answer
-        const { fromUserId, toUserId, offer } = payload;
+    remoteVideoRef.current.srcObject = remoteStream;
+  }, [remoteStream, remoteVideoRef]);
 
-        await businessApi.answer(fromUserId, offer);
-        localVideoRef.current.srcObject = streamApi.getStream(toUserId);
-        remoteVideoRef.current.srcObject = streamApi.getStream(fromUserId);
-      } else if (type === "answer") {
-        // answer received
-        const { fromUserId, answer } = payload;
-        await businessApi.handleAnswer(fromUserId, answer);
-        remoteVideoRef.current.srcObject = streamApi.getStream(fromUserId);
-      } else if (type === "candidate") {
-        // candidate received
-        const { fromUserId, candidate } = payload;
-        businessApi.addCandidate(fromUserId, candidate);
-      }
-      switch (type) {
-        case "user_disconnected":
-        case "user_connected":
-          setUserList(await webApi.getUserList());
-          break;
-        default:
-          break;
-      }
-    })();
-    return () => {
-      // cleanup
-    };
-  }, [lastJsonMessage, businessApi, localVideoRef, remoteVideoRef, streamApi]);
+  useEffect(() => {
+    localVideoRef.current.srcObject = localStream;
+  }, [localStream, localVideoRef]);
 
   const loginUser = useCallback(async () => {
     const userId = await webApi.loginUser(inputUserId);
