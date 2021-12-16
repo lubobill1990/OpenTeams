@@ -5,16 +5,45 @@ import {
   createContext,
   useContext,
   useRef,
+  useMemo,
 } from "react";
+import useWebSocket, { ReadyState } from "react-use-websocket";
+
 import { TextField } from "@fluentui/react/lib/TextField";
 import { PrimaryButton } from "@fluentui/react/lib/Button";
-import { webApi, businessApi, signalApi, streamApi } from "./Api";
+import {
+  webApi,
+  businessApi,
+  signalApi,
+  streamApi,
+  SignalApi,
+  StreamApi,
+  BusinessApi,
+} from "./Api";
 import "./App.css";
 import "office-ui-fabric-react/dist/css/fabric.css";
 
 const UserContext = createContext();
 
 function App() {
+  const [socketUrl, setSocketUrl] = useState(
+    "wss://ws.teams.com:9001/websocket"
+  );
+
+  const { sendJsonMessage, lastMessage, readyState, lastJsonMessage } =
+    useWebSocket(socketUrl);
+
+  const signalApi = useMemo(
+    () => new SignalApi(sendJsonMessage),
+    [sendJsonMessage]
+  );
+  const streamApi = useMemo(() => new StreamApi(), []);
+
+  const businessApi = useMemo(
+    () => new BusinessApi(signalApi, streamApi),
+    [signalApi, streamApi]
+  );
+
   const [roomId, setRoomId] = useState();
   const [inputUserId, setInputUserId] = useState();
   const [user, setUser] = useState({ id: undefined });
@@ -25,13 +54,13 @@ function App() {
   const enterRoom = useCallback(() => {
     // get user lists in the room
   }, [roomId]);
-  const websocketMessageListener = useCallback(
-    async (message) => {
-      const { data } = message;
-      if (typeof data !== "string") {
-        return;
-      }
-      const { type, payload } = JSON.parse(data);
+  useEffect(() => {
+    if (lastJsonMessage === null) {
+      return;
+    }
+    // effect
+    (async () => {
+      const { type, payload } = lastJsonMessage;
       if (type === "offer") {
         // offer received, need to answer
         const { fromUserId, toUserId, offer } = payload;
@@ -57,9 +86,12 @@ function App() {
         default:
           break;
       }
-    },
-    [localVideoRef, remoteVideoRef]
-  );
+    })();
+    return () => {
+      // cleanup
+    };
+  }, [lastJsonMessage, businessApi, localVideoRef, remoteVideoRef, streamApi]);
+
   const loginUser = useCallback(async () => {
     const userId = await webApi.loginUser(inputUserId);
     websocketRef.current = await signalApi.login(userId);
@@ -68,35 +100,14 @@ function App() {
       id: userId,
     });
     setUserList(await webApi.getUserList());
-  }, [inputUserId, user, websocketRef]);
-
-  useEffect(() => {
-    if (!websocketRef.current) {
-      return;
-    }
-    (async () => {
-      websocketRef.current.addEventListener(
-        "message",
-        websocketMessageListener
-      );
-    })();
-    return () => {
-      if (!websocketRef.current) {
-        return;
-      }
-      websocketRef.current.removeEventListener(
-        "message",
-        websocketMessageListener
-      );
-    };
-  }, [user, websocketMessageListener]);
+  }, [inputUserId, user, websocketRef, signalApi]);
 
   const dialUser = useCallback(
     async (toUserId) => {
       await businessApi.dialUser(toUserId);
       localVideoRef.current.srcObject = streamApi.getStream(user.id);
     },
-    [localVideoRef, user]
+    [localVideoRef, user, businessApi, streamApi]
   );
   return (
     <UserContext.Provider value={user}>
